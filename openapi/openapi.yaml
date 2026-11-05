@@ -1,0 +1,1791 @@
+openapi: 3.0.3
+info:
+  title: AI Fitness Coach API
+  version: 1.0.0
+  description: |
+    REST API гибридной рекомендательной системы AI-фитнес-ассистента.
+
+    **Возможности:** регистрация и JWT-аутентификация, анкета, безопасная генерация
+    плана (SafetyFilter + k-NN + TemplateEngine), история, статистика, обратная
+    связь, каталог упражнений и администрирование справочников.
+
+    **Особенности контракта:**
+    - единый формат ошибок FastAPI: `{ "detail": ... }`;
+    - пагинация `skip` / `limit` и заголовок `Content-Range`;
+    - для POST/PUT приведены тела запросов и примеры ответов;
+    - mock-сервер Prism использует примеры из этой спецификации.
+
+    **Аутентификация:** `Authorization: Bearer <JWT>`. Токен выдаёт
+    `POST /api/users/login` (form-urlencoded, совместимо с OAuth2PasswordRequestForm).
+  contact:
+    name: AI Fitness Coach team
+  license:
+    name: Educational project
+servers:
+  - url: http://localhost:8000
+    description: Локальный backend (Uvicorn)
+  - url: http://localhost:4010
+    description: Prism mock server
+  - url: https://api.ai-fitness.example
+    description: Production (пример)
+tags:
+  - name: System
+    description: Служебные методы
+  - name: Auth
+    description: Регистрация, вход, профиль, восстановление доступа
+  - name: Workouts
+    description: Генерация, история, статистика, обратная связь
+  - name: Catalog
+    description: Каталог упражнений и фасетный поиск
+  - name: Admin
+    description: Справочники, веса модели, пользователи, аудит
+security:
+  - bearerAuth: []
+paths:
+  /health:
+    get:
+      tags: [System]
+      operationId: healthCheck
+      summary: Проверка живости сервиса
+      security: []
+      responses:
+        "200":
+          description: Сервис доступен
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  version:
+                    type: string
+                    example: 1.0.0
+
+  /api/users/register:
+    post:
+      tags: [Auth]
+      operationId: registerUser
+      summary: Регистрация пользователя
+      description: Создаёт учётную запись с ролью `user`, хеширует пароль bcrypt.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserCreate"
+            example:
+              name: Анна
+              email: anna@example.com
+              password: Password123!
+      responses:
+        "201":
+          description: Пользователь создан
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserOut"
+              example:
+                id: 1
+                name: Анна
+                email: anna@example.com
+                role: user
+                level: null
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+  /api/users/login:
+    post:
+      tags: [Auth]
+      operationId: loginUser
+      summary: Вход и выдача JWT
+      description: |
+        Принимает `application/x-www-form-urlencoded` (OAuth2PasswordRequestForm).
+        Возвращает JWT сроком 7 дней.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username:
+                  type: string
+                  format: email
+                  example: anna@example.com
+                password:
+                  type: string
+                  format: password
+                  example: Password123!
+      responses:
+        "200":
+          description: Токен выдан
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Token"
+              example:
+                access_token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhbm5hQGV4YW1wbGUuY29tIn0.signature
+                token_type: bearer
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+  /api/users/me:
+    get:
+      tags: [Auth]
+      operationId: getCurrentUser
+      summary: Профиль текущего пользователя
+      responses:
+        "200":
+          description: Профиль
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserOut"
+              example:
+                id: 1
+                name: Анна
+                email: anna@example.com
+                role: user
+                level: Intermediate
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/users/password-reset:
+    post:
+      tags: [Auth]
+      operationId: requestPasswordReset
+      summary: Запрос восстановления доступа
+      description: |
+        Всегда возвращает `202 Accepted`, чтобы не раскрывать существование аккаунта.
+        Если аккаунт существует, создаётся одноразовый токен (TTL 30 минут).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasswordResetRequest"
+            example:
+              email: anna@example.com
+      responses:
+        "202":
+          description: Запрос принят
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+              example:
+                detail: Если аккаунт существует, письмо отправлено
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+  /api/users/password-reset/confirm:
+    post:
+      tags: [Auth]
+      operationId: confirmPasswordReset
+      summary: Подтверждение сброса пароля
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasswordResetConfirm"
+            example:
+              token: 6f1c2f9e-4b7a-4c2e-9d1a-1234567890ab
+              new_password: NewPassword123!
+      responses:
+        "200":
+          description: Пароль изменён
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+              example:
+                detail: Пароль обновлён
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+  /api/workouts/form-data:
+    get:
+      tags: [Workouts]
+      operationId: getFormData
+      summary: Справочники для анкеты
+      security: []
+      responses:
+        "200":
+          description: Мышцы, инвентарь и ограничения
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FormData"
+              example:
+                muscles: [Chest, Back, Quadriceps, Hamstrings, Glutes, Core]
+                equipment: [Barbell, Body Only, Cable, Dumbbell, Machine]
+                injuries: [Knee (Колени), Shoulder (Плечи), Spine (Позвоночник)]
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/workouts/generate:
+    post:
+      tags: [Workouts]
+      operationId: generateWorkout
+      summary: Сгенерировать безопасный план тренировки
+      description: |
+        Применяет SafetyFilter (100 % исключение противопоказанных упражнений),
+        k-NN-ранжирование и компоновку по слотам. Сохраняет тренировку в историю.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenerateWorkoutRequest"
+            example:
+              target_muscles: [Quadriceps, Glutes]
+              duration: 45
+              user_level_str: Intermediate
+              equipment: [Body Only, Dumbbell]
+              injuries: [Spine (Позвоночник)]
+      responses:
+        "200":
+          description: План сформирован
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkoutResponse"
+              example:
+                error: false
+                message: null
+                plan:
+                  - id: 101
+                    title: Приседания с собственным весом
+                    desc: Базовое упражнение для ног
+                    body_part: Quadriceps
+                    equipment: Body Only
+                    type: Strength
+                    slot_type: Базовое (Compound)
+                  - id: 102
+                    title: Ягодичный мост
+                    desc: Изолирующее упражнение для ягодиц
+                    body_part: Glutes
+                    equipment: Body Only
+                    type: Strength
+                    slot_type: Изолирующее (Isolation)
+                cooldown:
+                  - id: 501
+                    title: Растяжка квадрицепса
+                    desc: Спокойное растяжение
+                    body_part: Quadriceps
+                    equipment: Body Only
+                    type: Stretching
+                    slot_type: Растяжка (Cool-down)
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/workouts/feedback:
+    post:
+      tags: [Workouts]
+      operationId: submitFeedback
+      summary: Оценка или замена упражнения
+      description: |
+        Upsert по `workout_item_id`: одна оценка на элемент. Значение `rating = -1`
+        помечает элемент как пропущенный (`is_skipped = true`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FeedbackCreate"
+            example:
+              workout_item_id: 101
+              rating: 8
+              difficulty: normal
+      responses:
+        "200":
+          description: Оценка сохранена
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FeedbackResult"
+              example:
+                success: true
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /api/workouts/history:
+    get:
+      tags: [Workouts]
+      operationId: getWorkoutHistory
+      summary: История тренировок пользователя
+      parameters:
+        - $ref: "#/components/parameters/Skip"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Тренировки, новые → старые
+          headers:
+            Content-Range:
+              $ref: "#/components/headers/ContentRange"
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/WorkoutHistoryEntry"
+              example:
+                - id: 12
+                  date: "2026-11-02T18:30:00"
+                  duration: 45
+                  muscles: [Quadriceps, Glutes]
+                  level: Intermediate
+                  exercises_count: 8
+                  exercises:
+                    - title: Приседания с собственным весом
+                      skipped: false
+                    - title: Ягодичный мост
+                      skipped: true
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/workouts/stats:
+    get:
+      tags: [Workouts]
+      operationId: getWorkoutStats
+      summary: Агрегированная статистика пользователя
+      parameters:
+        - $ref: "#/components/parameters/PeriodDays"
+      responses:
+        "200":
+          description: Статистика за период
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkoutStats"
+              example:
+                period_days: 30
+                total_workouts: 7
+                total_minutes: 315
+                avg_rating: 7.8
+                by_muscle:
+                  Quadriceps: 4
+                  Glutes: 3
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /api/workouts/{workoutId}:
+    get:
+      tags: [Workouts]
+      operationId: getWorkoutById
+      summary: План тренировки и объяснение
+      parameters:
+        - $ref: "#/components/parameters/WorkoutId"
+      responses:
+        "200":
+          description: План с элементами и объяснением
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkoutDetails"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/exercises:
+    get:
+      tags: [Catalog]
+      operationId: searchExercises
+      summary: Поиск упражнений в каталоге
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/SearchQ"
+        - $ref: "#/components/parameters/BodyPartFilter"
+        - $ref: "#/components/parameters/EquipmentFilter"
+        - $ref: "#/components/parameters/LevelFilter"
+        - $ref: "#/components/parameters/TypeFilter"
+        - $ref: "#/components/parameters/Skip"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Найденные упражнения
+          headers:
+            Content-Range:
+              $ref: "#/components/headers/ContentRange"
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Exercise"
+              example:
+                - id: 101
+                  title: Приседания с собственным весом
+                  desc: Базовое упражнение для ног
+                  body_part: Quadriceps
+                  equipment: Body Only
+                  level: Beginner
+                  type: Strength
+                  is_compound: 1
+                  features:
+                    Spine_Load: 0
+                    Knee_Load: 1
+                    Overhead_Mvmt: 0
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /api/exercises/{exerciseId}:
+    get:
+      tags: [Catalog]
+      operationId: getExerciseById
+      summary: Карточка упражнения
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/ExerciseId"
+      responses:
+        "200":
+          description: Упражнение
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Exercise"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/admin/difficulty-words:
+    get:
+      tags: [Admin]
+      operationId: listDifficultyWords
+      summary: Список слов-модификаторов сложности
+      description: Требуется роль `admin`.
+      parameters:
+        - $ref: "#/components/parameters/Skip"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Список слов
+          headers:
+            Content-Range:
+              $ref: "#/components/headers/ContentRange"
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DifficultyWord"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      tags: [Admin]
+      operationId: createDifficultyWord
+      summary: Создать слово-модификатор
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DifficultyWordInput"
+            example:
+              word: tempo
+              difficulty_mod: 0.7
+      responses:
+        "201":
+          description: Слово создано
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DifficultyWord"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /api/admin/difficulty-words/{wordId}:
+    get:
+      tags: [Admin]
+      operationId: getDifficultyWord
+      summary: Получить слово-модификатор
+      parameters:
+        - $ref: "#/components/parameters/WordId"
+      responses:
+        "200":
+          description: Слово
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DifficultyWord"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [Admin]
+      operationId: updateDifficultyWord
+      summary: Изменить слово-модификатор
+      parameters:
+        - $ref: "#/components/parameters/WordId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DifficultyWordInput"
+            example:
+              word: tempo
+              difficulty_mod: 0.9
+      responses:
+        "200":
+          description: Слово обновлено
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DifficultyWord"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+    delete:
+      tags: [Admin]
+      operationId: deleteDifficultyWord
+      summary: Удалить слово-модификатор
+      parameters:
+        - $ref: "#/components/parameters/WordId"
+      responses:
+        "200":
+          description: Удалено
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeletedResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/admin/injuries:
+    get:
+      tags: [Admin]
+      operationId: listInjuries
+      summary: Список медицинских ограничений
+      parameters:
+        - $ref: "#/components/parameters/Skip"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Список ограничений
+          headers:
+            Content-Range:
+              $ref: "#/components/headers/ContentRange"
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Injury"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      tags: [Admin]
+      operationId: createInjury
+      summary: Создать ограничение
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InjuryInput"
+            example:
+              name: Кифоз
+              word: Spine_Load
+      responses:
+        "201":
+          description: Ограничение создано
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Injury"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /api/admin/injuries/{injuryId}:
+    get:
+      tags: [Admin]
+      operationId: getInjury
+      summary: Получить ограничение
+      parameters:
+        - $ref: "#/components/parameters/InjuryId"
+      responses:
+        "200":
+          description: Ограничение
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Injury"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [Admin]
+      operationId: updateInjury
+      summary: Изменить ограничение
+      parameters:
+        - $ref: "#/components/parameters/InjuryId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InjuryInput"
+            example:
+              name: Кифоз
+              word: Spine_Load
+      responses:
+        "200":
+          description: Ограничение обновлено
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Injury"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+    delete:
+      tags: [Admin]
+      operationId: deleteInjury
+      summary: Удалить ограничение
+      parameters:
+        - $ref: "#/components/parameters/InjuryId"
+      responses:
+        "200":
+          description: Удалено
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeletedResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/admin/settings:
+    get:
+      tags: [Admin]
+      operationId: listSettings
+      summary: Список профилей весов
+      parameters:
+        - $ref: "#/components/parameters/Skip"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Профили весов
+          headers:
+            Content-Range:
+              $ref: "#/components/headers/ContentRange"
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SystemSettings"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      tags: [Admin]
+      operationId: createSettings
+      summary: Создать профиль весов
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SystemSettingsInput"
+            example:
+              name: Профиль для зала
+              weight_body: 0.7
+              weight_equip: 0.2
+              weight_level: 0.5
+              is_active: false
+      responses:
+        "201":
+          description: Профиль создан
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemSettings"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /api/admin/settings/{settingId}:
+    get:
+      tags: [Admin]
+      operationId: getSettings
+      summary: Получить профиль весов
+      parameters:
+        - $ref: "#/components/parameters/SettingId"
+      responses:
+        "200":
+          description: Профиль
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemSettings"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [Admin]
+      operationId: updateSettings
+      summary: Изменить/активировать профиль весов
+      description: При `is_active = true` остальные профили деактивируются.
+      parameters:
+        - $ref: "#/components/parameters/SettingId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SystemSettingsInput"
+            example:
+              name: Профиль для зала
+              weight_body: 0.7
+              weight_equip: 0.2
+              weight_level: 0.5
+              is_active: true
+      responses:
+        "200":
+          description: Профиль обновлён
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemSettings"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+    delete:
+      tags: [Admin]
+      operationId: deleteSettings
+      summary: Удалить профиль весов
+      parameters:
+        - $ref: "#/components/parameters/SettingId"
+      responses:
+        "200":
+          description: Удалено
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeletedResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/admin/users:
+    get:
+      tags: [Admin]
+      operationId: listUsers
+      summary: Список пользователей
+      parameters:
+        - $ref: "#/components/parameters/Skip"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Пользователи
+          headers:
+            Content-Range:
+              $ref: "#/components/headers/ContentRange"
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/UserOut"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/admin/users/{userId}:
+    get:
+      tags: [Admin]
+      operationId: getUser
+      summary: Карточка пользователя
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      responses:
+        "200":
+          description: Пользователь
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserOut"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [Admin]
+      operationId: updateUserRole
+      summary: Изменить роль пользователя
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserRoleUpdate"
+            example:
+              role: admin
+      responses:
+        "200":
+          description: Роль обновлена
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserOut"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /api/admin/exercises:
+    get:
+      tags: [Admin]
+      operationId: listAdminExercises
+      summary: Каталог упражнений для админки
+      parameters:
+        - $ref: "#/components/parameters/Skip"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Упражнения
+          headers:
+            Content-Range:
+              $ref: "#/components/headers/ContentRange"
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Exercise"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/admin/exercises/{exerciseId}:
+    get:
+      tags: [Admin]
+      operationId: getAdminExercise
+      summary: Карточка упражнения для админки
+      parameters:
+        - $ref: "#/components/parameters/ExerciseId"
+      responses:
+        "200":
+          description: Упражнение
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Exercise"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/admin/audit-log:
+    get:
+      tags: [Admin]
+      operationId: listAuditLog
+      summary: Журнал действий MCP-агента
+      parameters:
+        - $ref: "#/components/parameters/Skip"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/AuditAction"
+        - $ref: "#/components/parameters/AuditUserId"
+        - $ref: "#/components/parameters/AuditStatus"
+      responses:
+        "200":
+          description: Записи аудита, новые → старые
+          headers:
+            Content-Range:
+              $ref: "#/components/headers/ContentRange"
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AuditLogEntry"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/admin/stats:
+    get:
+      tags: [Admin]
+      operationId: getAdminStats
+      summary: Статистика админки
+      responses:
+        "200":
+          description: Агрегированные показатели
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminStats"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT, полученный в `POST /api/users/login`
+
+  parameters:
+    Skip:
+      name: skip
+      in: query
+      required: false
+      description: Количество пропускаемых записей
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: Размер страницы
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 50
+    PeriodDays:
+      name: period_days
+      in: query
+      required: false
+      description: Период статистики в днях
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 365
+        default: 30
+    WorkoutId:
+      name: workoutId
+      in: path
+      required: true
+      schema:
+        type: integer
+        minimum: 1
+    ExerciseId:
+      name: exerciseId
+      in: path
+      required: true
+      schema:
+        type: integer
+        minimum: 1
+    WordId:
+      name: wordId
+      in: path
+      required: true
+      schema:
+        type: integer
+        minimum: 1
+    InjuryId:
+      name: injuryId
+      in: path
+      required: true
+      schema:
+        type: integer
+        minimum: 1
+    SettingId:
+      name: settingId
+      in: path
+      required: true
+      schema:
+        type: integer
+        minimum: 1
+    UserId:
+      name: userId
+      in: path
+      required: true
+      schema:
+        type: integer
+        minimum: 1
+    SearchQ:
+      name: q
+      in: query
+      required: false
+      description: Подстрока названия упражнения
+      schema:
+        type: string
+        maxLength: 100
+    BodyPartFilter:
+      name: body_part
+      in: query
+      required: false
+      schema:
+        type: string
+        example: Quadriceps
+    EquipmentFilter:
+      name: equipment
+      in: query
+      required: false
+      schema:
+        type: string
+        example: Dumbbell
+    LevelFilter:
+      name: level
+      in: query
+      required: false
+      schema:
+        type: string
+        enum: [Beginner, Intermediate, Expert]
+    TypeFilter:
+      name: type
+      in: query
+      required: false
+      schema:
+        type: string
+        example: Strength
+    AuditAction:
+      name: action
+      in: query
+      required: false
+      schema:
+        type: string
+        example: generate_workout
+    AuditUserId:
+      name: user_id
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+    AuditStatus:
+      name: status
+      in: query
+      required: false
+      schema:
+        type: string
+        enum: [success, error, denied]
+
+  headers:
+    ContentRange:
+      description: Диапазон и общее количество записей, например `injuries 0-49/3`
+      schema:
+        type: string
+        example: injuries 0-49/3
+
+  responses:
+    BadRequest:
+      description: Некорректный запрос
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            detail: Пользователь с таким email уже существует
+    Unauthorized:
+      description: Требуется аутентификация или токен недействителен
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            detail: Не удалось проверить учетные данные (Токен недействителен)
+    Forbidden:
+      description: Недостаточно прав
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            detail: Доступ запрещён
+    NotFound:
+      description: Ресурс не найден
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            detail: Ресурс не найден
+    Conflict:
+      description: Конфликт состояния (дубликат)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            detail: This word already exists
+    UnprocessableEntity:
+      description: Ошибка валидации
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            detail:
+              - loc: [body, duration]
+                msg: ensure this value is greater than or equal to 30
+                type: value_error.number.not_ge
+    TooManyRequests:
+      description: Превышен лимит запросов
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            detail: Слишком много запросов. Повторите позже.
+    InternalServerError:
+      description: Внутренняя ошибка сервера
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            detail: База пуста
+    ServiceUnavailable:
+      description: Зависимость недоступна
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            detail: База данных недоступна
+
+  schemas:
+    Error:
+      type: object
+      required: [detail]
+      properties:
+        detail:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: object
+                properties:
+                  loc:
+                    type: array
+                    items:
+                      oneOf:
+                        - type: string
+                        - type: integer
+                  msg:
+                    type: string
+                  type:
+                    type: string
+    MessageResponse:
+      type: object
+      required: [detail]
+      properties:
+        detail:
+          type: string
+          example: Операция выполнена
+    DeletedResponse:
+      type: object
+      required: [id, message]
+      properties:
+        id:
+          type: integer
+          example: 3
+        message:
+          type: string
+          example: Deleted successfully
+
+    UserCreate:
+      type: object
+      required: [name, email, password]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          example: Анна
+        email:
+          type: string
+          format: email
+          maxLength: 255
+          example: anna@example.com
+        password:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 128
+          example: Password123!
+    UserOut:
+      type: object
+      required: [id, name, email, role]
+      properties:
+        id:
+          type: integer
+          example: 1
+        name:
+          type: string
+          example: Анна
+        email:
+          type: string
+          format: email
+          example: anna@example.com
+        role:
+          type: string
+          enum: [user, admin]
+          example: user
+        level:
+          type: string
+          nullable: true
+          enum: [Beginner, Intermediate, Expert, null]
+          example: Intermediate
+    UserRoleUpdate:
+      type: object
+      required: [role]
+      properties:
+        role:
+          type: string
+          enum: [user, admin]
+          example: admin
+    Token:
+      type: object
+      required: [access_token, token_type]
+      properties:
+        access_token:
+          type: string
+          example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+        token_type:
+          type: string
+          example: bearer
+    PasswordResetRequest:
+      type: object
+      required: [email]
+      properties:
+        email:
+          type: string
+          format: email
+          example: anna@example.com
+    PasswordResetConfirm:
+      type: object
+      required: [token, new_password]
+      properties:
+        token:
+          type: string
+          minLength: 16
+          example: 6f1c2f9e-4b7a-4c2e-9d1a-1234567890ab
+        new_password:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 128
+          example: NewPassword123!
+
+    FormData:
+      type: object
+      required: [muscles, equipment, injuries]
+      properties:
+        muscles:
+          type: array
+          items:
+            type: string
+          example: [Chest, Back, Quadriceps, Hamstrings, Glutes, Core]
+        equipment:
+          type: array
+          items:
+            type: string
+          example: [Barbell, Body Only, Cable, Dumbbell, Machine]
+        injuries:
+          type: array
+          items:
+            type: string
+          example: [Knee (Колени), Shoulder (Плечи), Spine (Позвоночник)]
+
+    GenerateWorkoutRequest:
+      type: object
+      required: [target_muscles, duration, user_level_str]
+      properties:
+        target_muscles:
+          type: array
+          minItems: 1
+          maxItems: 8
+          items:
+            type: string
+          example: [Quadriceps, Glutes]
+        duration:
+          type: integer
+          minimum: 30
+          maximum: 120
+          example: 45
+        user_level_str:
+          type: string
+          enum: [Beginner, Intermediate, Expert]
+          example: Intermediate
+        equipment:
+          type: array
+          items:
+            type: string
+          default: []
+          example: [Body Only, Dumbbell]
+        injuries:
+          type: array
+          items:
+            type: string
+          default: []
+          example: [Spine (Позвоночник)]
+    ExerciseOut:
+      type: object
+      required: [id, title, body_part, equipment, type, slot_type]
+      properties:
+        id:
+          type: integer
+          example: 101
+        title:
+          type: string
+          example: Приседания с собственным весом
+        desc:
+          type: string
+          nullable: true
+          example: Базовое упражнение для ног
+        body_part:
+          type: string
+          example: Quadriceps
+        equipment:
+          type: string
+          example: Body Only
+        type:
+          type: string
+          example: Strength
+        slot_type:
+          type: string
+          example: Базовое (Compound)
+    WorkoutResponse:
+      type: object
+      required: [error, plan, cooldown]
+      properties:
+        error:
+          type: boolean
+          example: false
+        message:
+          type: string
+          nullable: true
+          example: null
+        plan:
+          type: array
+          items:
+            $ref: "#/components/schemas/ExerciseOut"
+        cooldown:
+          type: array
+          items:
+            $ref: "#/components/schemas/ExerciseOut"
+    WorkoutDetails:
+      type: object
+      required: [id, date, plan_data, items]
+      properties:
+        id:
+          type: integer
+          example: 12
+        date:
+          type: string
+          format: date-time
+          example: "2026-11-02T18:30:00"
+        plan_data:
+          type: object
+          additionalProperties: true
+          example:
+            duration: 45
+            target_muscles: [Quadriceps, Glutes]
+            user_level_str: Intermediate
+        items:
+          type: array
+          items:
+            type: object
+            required: [id, order, slot_type, is_skipped, exercise]
+            properties:
+              id:
+                type: integer
+                example: 101
+              order:
+                type: integer
+                example: 1
+              slot_type:
+                type: string
+                example: Базовое (Compound)
+              is_skipped:
+                type: boolean
+                example: false
+              exercise:
+                $ref: "#/components/schemas/Exercise"
+
+    FeedbackCreate:
+      type: object
+      required: [workout_item_id, rating]
+      properties:
+        workout_item_id:
+          type: integer
+          minimum: 1
+          example: 101
+        rating:
+          type: integer
+          minimum: -1
+          maximum: 10
+          description: 1–10 — оценка, −1 — заменить/пропустить
+          example: 8
+        difficulty:
+          type: string
+          nullable: true
+          enum: [easy, normal, hard, null]
+          example: normal
+    FeedbackResult:
+      type: object
+      required: [success]
+      properties:
+        success:
+          type: boolean
+          example: true
+    WorkoutHistoryEntry:
+      type: object
+      required: [id, date, exercises_count, exercises]
+      properties:
+        id:
+          type: integer
+          example: 12
+        date:
+          type: string
+          format: date-time
+          example: "2026-11-02T18:30:00"
+        duration:
+          type: integer
+          example: 45
+        muscles:
+          type: array
+          items:
+            type: string
+          example: [Quadriceps, Glutes]
+        level:
+          type: string
+          example: Intermediate
+        exercises_count:
+          type: integer
+          example: 8
+        exercises:
+          type: array
+          items:
+            type: object
+            required: [title, skipped]
+            properties:
+              title:
+                type: string
+                example: Приседания с собственным весом
+              skipped:
+                type: boolean
+                example: false
+    WorkoutStats:
+      type: object
+      required: [period_days, total_workouts, total_minutes, avg_rating]
+      properties:
+        period_days:
+          type: integer
+          example: 30
+        total_workouts:
+          type: integer
+          example: 7
+        total_minutes:
+          type: integer
+          example: 315
+        avg_rating:
+          type: number
+          format: float
+          nullable: true
+          example: 7.8
+        by_muscle:
+          type: object
+          additionalProperties:
+            type: integer
+          example:
+            Quadriceps: 4
+            Glutes: 3
+
+    Exercise:
+      type: object
+      required: [id, title, body_part, equipment, level, type, is_compound]
+      properties:
+        id:
+          type: integer
+          example: 101
+        title:
+          type: string
+          example: Приседания с собственным весом
+        desc:
+          type: string
+          nullable: true
+          example: Базовое упражнение для ног
+        body_part:
+          type: string
+          example: Quadriceps
+        equipment:
+          type: string
+          example: Body Only
+        level:
+          type: string
+          enum: [Beginner, Intermediate, Expert]
+          example: Beginner
+        type:
+          type: string
+          example: Strength
+        is_compound:
+          type: integer
+          enum: [0, 1]
+          example: 1
+        features:
+          type: object
+          additionalProperties:
+            anyOf:
+              - type: integer
+              - type: number
+              - type: string
+          example:
+            Spine_Load: 0
+            Knee_Load: 1
+            Overhead_Mvmt: 0
+
+    DifficultyWordInput:
+      type: object
+      required: [word, difficulty_mod]
+      properties:
+        word:
+          type: string
+          maxLength: 100
+          example: tempo
+        difficulty_mod:
+          type: number
+          format: float
+          minimum: 0
+          example: 0.7
+    DifficultyWord:
+      allOf:
+        - $ref: "#/components/schemas/DifficultyWordInput"
+        - type: object
+          required: [id]
+          properties:
+            id:
+              type: integer
+              example: 1
+
+    InjuryInput:
+      type: object
+      required: [name, word]
+      properties:
+        name:
+          type: string
+          maxLength: 100
+          example: Кифоз
+        word:
+          type: string
+          maxLength: 100
+          example: Spine_Load
+    Injury:
+      allOf:
+        - $ref: "#/components/schemas/InjuryInput"
+        - type: object
+          required: [id]
+          properties:
+            id:
+              type: integer
+              example: 1
+
+    SystemSettingsInput:
+      type: object
+      required: [name, weight_body, weight_equip, weight_level, is_active]
+      properties:
+        name:
+          type: string
+          maxLength: 100
+          example: Профиль для зала
+        weight_body:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          example: 0.7
+        weight_equip:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          example: 0.2
+        weight_level:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          example: 0.5
+        is_active:
+          type: boolean
+          example: true
+    SystemSettings:
+      allOf:
+        - $ref: "#/components/schemas/SystemSettingsInput"
+        - type: object
+          required: [id]
+          properties:
+            id:
+              type: integer
+              example: 1
+
+    AuditLogEntry:
+      type: object
+      required: [id, actor, action, status, created_at]
+      properties:
+        id:
+          type: integer
+          example: 42
+        actor:
+          type: string
+          example: mcp-agent
+        action:
+          type: string
+          example: generate_workout
+        user_id:
+          type: integer
+          nullable: true
+          example: 1
+        payload:
+          type: object
+          additionalProperties: true
+          example:
+            target_muscles: [Quadriceps]
+            duration: 45
+        status:
+          type: string
+          enum: [success, error, denied]
+          example: success
+        detail:
+          type: string
+          nullable: true
+          example: null
+        created_at:
+          type: string
+          format: date-time
+          example: "2026-11-02T18:30:00"
+
+    AdminStats:
+      type: object
+      required: [users_total, workouts_total, exercises_total, feedback_total]
+      properties:
+        users_total:
+          type: integer
+          example: 25
+        workouts_total:
+          type: integer
+          example: 140
+        exercises_total:
+          type: integer
+          example: 2910
+        feedback_total:
+          type: integer
+          example: 980
+        active_settings:
+          type: integer
+          example: 1

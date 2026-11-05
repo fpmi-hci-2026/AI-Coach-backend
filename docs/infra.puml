@@ -1,0 +1,53 @@
+@startuml AI_Coach_Infrastructure
+skinparam componentStyle rectangle
+skinparam roundcorner 8
+skinparam shadowing false
+
+actor "Пользователь\n(Браузер / Смартфон)" as USER
+
+package "Клиентский контур" {
+  component "Web Client\n(Next.js 16 / React 19)\n:3000" as WEB
+  component "Mobile Client\n(Expo 58 / React Native)" as MOBILE
+}
+
+node "Контейнерное окружение Docker Compose (ai_coach_net)" as DOCKER {
+  package "Сервисы приложений" {
+    component "Backend API\n(FastAPI / Uvicorn)\n:8000" as API
+    component "MCP Server\n(FastMCP / SQLite)\n:8080" as MCP
+  }
+  
+  database "PostgreSQL 16\n:5432" as DB {
+    folder "Volume: pgdata" as VOL
+    file "001_init.sql\n002_seed.sql" as SEED
+  }
+}
+
+cloud "CI/CD & Реестры (GitHub)" as GH {
+  component "GitHub Actions\n(CI: Contract, Tests, Swagger, Sonar)" as CI
+  component "GHCR (ghcr.io)\n(Docker Registry)" as GHCR
+  component "GitHub Pages\n(Документация Swagger UI & Wiki)" as PAGES
+}
+
+cloud "Облачная инфраструктура (Production / Demo)" as CLOUD {
+  component "Render.com\n(Backend Docker Web Service)" as RENDER
+  component "Vercel\n(Web Frontend Hosting)" as VERCEL
+  database "Neon / Supabase\n(Managed Cloud PostgreSQL)" as CLOUD_DB
+}
+
+USER --> WEB : HTTPS :443
+USER --> MOBILE : UI
+WEB --> API : REST API :8000
+MOBILE --> API : REST API :8000
+
+API --> DB : TCP/SQL :5432
+API --> MCP : stdio / HTTP :8080
+DB ..> VOL : постоянное хранение
+SEED ..> DB : автоинициализация схемы
+
+CI --> GHCR : docker build & push (тег v*)
+GHCR --> RENDER : pull docker image
+RENDER --> CLOUD_DB : DATABASE_URL (SSL)
+VERCEL --> RENDER : REST API запросы
+CI --> PAGES : публикация Swagger-артефакта
+
+@enduml

@@ -1,0 +1,57 @@
+name: ai-coach-backend
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: ai-coach-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ai_coach}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ai_coach_dev}
+      POSTGRES_DB: ${POSTGRES_DB:-ai_coach}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
+      - ./db/002_seed.sql:/docker-entrypoint-initdb.d/002_seed.sql:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-ai_coach} -d ${POSTGRES_DB:-ai_coach}",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ai-coach-backend
+    environment:
+      PYTHONUNBUFFERED: "1"
+      DATABASE_URL: postgresql+pg8000://${POSTGRES_USER:-ai_coach}:${POSTGRES_PASSWORD:-ai_coach_dev}@db:5432/${POSTGRES_DB:-ai_coach}
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  pgdata:

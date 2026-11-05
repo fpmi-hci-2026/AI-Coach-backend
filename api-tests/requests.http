@@ -1,0 +1,121 @@
+# AI Fitness Coach — примеры запросов для Prism / реального backend
+# Файл совместим с VS Code REST Client и JetBrains HTTP Client.
+# Перед запуском выберите окружение:
+#   @host = http://localhost:4010   (Prism mock)
+#   @host = http://localhost:8000   (реальный backend)
+@host = http://localhost:4010
+@token = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhbm5hQGV4YW1wbGUuY29tIn0.signature
+
+### Проверка живости
+GET {{host}}/health
+
+### Справочники для анкеты
+GET {{host}}/api/workouts/form-data
+
+### Регистрация
+POST {{host}}/api/users/register
+Content-Type: application/json
+
+{
+  "name": "Анна",
+  "email": "anna@example.com",
+  "password": "Password123!"
+}
+
+### Вход (form-urlencoded, как OAuth2PasswordRequestForm)
+POST {{host}}/api/users/login
+Content-Type: application/x-www-form-urlencoded
+
+username=anna%40example.com&password=Password123%21
+
+### Профиль текущего пользователя
+GET {{host}}/api/users/me
+Authorization: Bearer {{token}}
+
+### Генерация безопасного плана
+POST {{host}}/api/workouts/generate
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "target_muscles": ["Quadriceps", "Glutes"],
+  "duration": 45,
+  "user_level_str": "Intermediate",
+  "equipment": ["Body Only", "Dumbbell"],
+  "injuries": ["Spine (Позвоночник)"]
+}
+
+### Оценка упражнения
+POST {{host}}/api/workouts/feedback
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "workout_item_id": 101,
+  "rating": 8,
+  "difficulty": "normal"
+}
+
+### Замена упражнения (rating = -1)
+POST {{host}}/api/workouts/feedback
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "workout_item_id": 101,
+  "rating": -1,
+  "difficulty": "hard"
+}
+
+### История тренировок
+GET {{host}}/api/workouts/history?skip=0&limit=10
+Authorization: Bearer {{token}}
+
+### Статистика
+GET {{host}}/api/workouts/stats?period_days=30
+Authorization: Bearer {{token}}
+
+### Каталог: фильтр по мышце
+GET {{host}}/api/exercises?body_part=Quadriceps&limit=5
+
+### Админ: ограничения
+GET {{host}}/api/admin/injuries?skip=0&limit=50
+Authorization: Bearer {{token}}
+
+### Админ: создать ограничение
+POST {{host}}/api/admin/injuries
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "name": "Кифоз",
+  "word": "Spine_Load"
+}
+
+### Админ: активировать профиль весов
+PUT {{host}}/api/admin/settings/1
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "name": "Профиль для зала",
+  "weight_body": 0.7,
+  "weight_equip": 0.2,
+  "weight_level": 0.5,
+  "is_active": true
+}
+
+### Админ: журнал аудита MCP
+GET {{host}}/api/admin/audit-log?limit=20
+Authorization: Bearer {{token}}
+
+### Негативный тест: пустые мышцы и duration = 20 → 422
+POST {{host}}/api/workouts/generate
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "target_muscles": [],
+  "duration": 20,
+  "user_level_str": "Beginner"
+}
